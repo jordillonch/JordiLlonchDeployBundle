@@ -19,10 +19,12 @@ use JordiLlonch\Bundle\DeployBundle\Helpers\PhpFpmHelper;
 use JordiLlonch\Bundle\DeployBundle\Helpers\SharedDirsHelper;
 use JordiLlonch\Bundle\DeployBundle\Helpers\Symfony2;
 use JordiLlonch\Bundle\DeployBundle\Helpers\Symfony2Helper;
+use JordiLlonch\Bundle\DeployBundle\Helpers\FilesHelper;
 use JordiLlonch\Bundle\DeployBundle\SSH\SshManager;
 use JordiLlonch\Bundle\DeployBundle\VCS\VcsFactory;
 use JordiLlonch\Bundle\DeployBundle\VCS\VcsInterface;
 use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Process\Process;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Finder\Finder;
 
@@ -103,6 +105,7 @@ abstract class BaseDeployer implements DeployerInterface
             new HipChatHelper(),
             new PhpFpmHelper(),
             new Symfony2Helper(),
+            new FilesHelper()
         );
     }
 
@@ -442,8 +445,22 @@ abstract class BaseDeployer implements DeployerInterface
     public function rsync($originPath, $server, $serverPath, $rsyncParams = '')
     {
         list($host, $port) = $this->extractHostPort($server);
-        if ($host == 'localhost') $this->exec('cp -a "' . $originPath . '" "' . $serverPath . '"');
-        else $this->exec('rsync -ar --delete -e "ssh -p ' . $port . ' -i \"' . $this->sshConfig['private_key_file'] . '\" -l ' . $this->sshConfig['user'] . ' -o \"UserKnownHostsFile=/dev/null\" -o \"StrictHostKeyChecking=no\"" ' . $rsyncParams . ' "' . $originPath . '" "' . $host . ':' . $serverPath . '"');
+        if ($host == 'localhost')
+        {
+            $this->exec('cp -a "' . $originPath . '" "' . $serverPath . '"');
+        }
+        else
+        {
+            if(array_key_exists('private_key_file',$this->sshConfig) && $this->sshConfig['private_key_file'] != null)
+            {
+                $this->exec('rsync -ar --delete -e "ssh -p ' . $port . ' -i \"' . $this->sshConfig['private_key_file'] . '\" -l ' . $this->sshConfig['user'] . ' -o \"UserKnownHostsFile=/dev/null\" -o \"StrictHostKeyChecking=no\"" ' . $rsyncParams . ' "' . $originPath . '" "' . $host . ':' . $serverPath . '"');
+            }
+            else
+            {
+                $this->exec('rsync -ar --delete -e "ssh -p ' . $port . ' -l ' . $this->sshConfig['user'] . ' -o \"UserKnownHostsFile=/dev/null\" -o \"StrictHostKeyChecking=no\"" ' . $rsyncParams . ' "' . $originPath . '" "' . $host . ':' . $serverPath . '"');
+            }
+
+        }
     }
 
     /**
@@ -652,18 +669,28 @@ abstract class BaseDeployer implements DeployerInterface
 
     abstract protected function runClearCache();
 
-    public function exec($command, &$output = null)
+    public function exec($command)
     {
         $this->logger->debug('exec: ' . $command);
 
         if ($this->dryMode) return;
 
-        $outputLastLine = exec($command, $output, $returnVar);
-        if ($returnVar != 0) throw new \Exception('ERROR executing: ' . $command . "\n" . implode("\n", $output));
+        $process = new Process($command);
+        $process->run();
 
-        if(!empty($output)) foreach($output as $item) $this->logger->debug('exec output: ' . $item);
+        $process_output = $process->getOutput();
 
-        return $outputLastLine;
+        if(!$process->isSuccessful())
+        {
+            throw new \Exception('ERROR executing: ' . $command . "\n" .$process->getErrorOutput());
+        }
+
+        if(!empty($process_output))
+        {
+            $this->logger->debug('exec output: ' . $process_output);
+        }
+
+        return $process_output;
     }
 
     protected function execRemote(array $servers, $command)
